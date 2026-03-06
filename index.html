@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>iPad 极意手势烟花 (音效增强版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; position: fixed; width: 100%; height: 100%; font-family: -apple-system, sans-serif; }
+        #input_video { display: none; }
+        canvas { position: absolute; top: 0; left: 0; touch-action: none; }
+        #ui {
+            position: absolute; top: env(safe-area-inset-top, 20px); left: 20px; z-index: 100;
+            color: #fff; pointer-events: none;
+        }
+        .instruction-card {
+            background: rgba(0, 255, 255, 0.15); border: 1px solid #0ff;
+            padding: 15px; border-radius: 15px; backdrop-filter: blur(10px); font-size: 14px; line-height: 1.6;
+        }
+        #loading {
+            position: fixed; inset: 0; background: #000; z-index: 1000;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; color: #0ff;
+        }
+        #audio-hint {
+            position: fixed; bottom: 40px; width: 100%; text-align: center;
+            color: #ffeb3b; z-index: 200; font-weight: bold; text-shadow: 0 0 10px #000;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+
+<div id="loading">
+    <div style="font-size: 20px; font-weight: bold;">🚀 正在同步 iPad 视觉与音频引擎...</div>
+</div>
+
+<div id="audio-hint">🔊 初次进入请点一下屏幕激活音效</div>
+
+<div id="ui">
+    <div class="instruction-card">
+        ✨ <b>iPad 操控秘籍</b><br>
+        ✊ <b>握紧拳头</b>：收集能量 (Charge)<br>
+        🖐️ <b>张开手掌</b>：瞬间释放 (Burst)<br>
+        👆 <b>点击屏幕</b>：手动补发烟花
+    </div>
+</div>
+
+<video id="input_video" playsinline autoplay muted></video>
+<canvas id="firework_canvas"></canvas>
+
+<script>
+    const videoElement = document.getElementById('input_video');
+    const canvas = document.getElementById('firework_canvas');
+    const ctx = canvas.getContext('2d');
+    const loader = document.getElementById('loading');
+    const audioHint = document.getElementById('audio-hint');
+
+    let width, height;
+    let particles = [];
+    let handsInfo = [{ charging: false, level: 0, x: 0, y: 0 }, { charging: false, level: 0, x: 0, y: 0 }];
+
+    // --- 音频系统 ---
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    let audioCtx;
+
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new AudioContext();
+            audioHint.style.display = 'none';
+        }
+    }
+
+    // 模拟合成烟花爆炸声
+    function playPopSound(level) {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle'; 
+        osc.frequency.setValueAtTime(100 + level * 2, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.5);
+    }
+
+    // --- 粒子系统 ---
+    class Particle {
+        constructor(x, y, hue, power) {
+            this.x = x; this.y = y;
+            this.hue = hue + (Math.random() * 40 - 20);
+            this.alpha = 1;
+            this.decay = Math.random() * 0.012 + 0.01;
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Math.random() * (power * 0.25) + 2;
+            this.vx = Math.cos(angle) * speed;
+            this.vy = Math.sin(angle) * speed;
+            this.friction = 0.96;
+            this.gravity = 0.15;
+        }
+        update() {
+            this.vx *= this.friction; this.vy *= this.friction; this.vy += this.gravity;
+            this.x += this.vx; this.y += this.vy; this.alpha -= this.decay;
+        }
+        draw() {
+            ctx.fillStyle = `hsla(${this.hue}, 100%, 75%, ${this.alpha})`;
+            ctx.beginPath(); ctx.arc(this.x, this.y, 2, 0, Math.PI * 2); ctx.fill();
+        }
+    }
+
+    function resize() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 点击屏幕：激活音频并手动发射
+    canvas.addEventListener('pointerdown', (e) => {
+        initAudio();
+        createExplosion(e.clientX, e.clientY, 40, Math.random() * 360);
+        playPopSound(40);
+    });
+
+    function createExplosion(x, y, level, hue) {
+        const count = Math.floor(level * 5);
+        for (let i = 0; i < count; i++) {
+            particles.push(new Particle(x, y, hue, level));
+        }
+    }
+
+    function onResults(results) {
+        if (loader.style.display !== 'none') loader.style.display = 'none';
+
+        if (results.multiHandLandmarks) {
+            results.multiHandLandmarks.forEach((landmarks, i) => {
+                if (i > 1) return;
+                const state = handsInfo[i];
+                const wrist = landmarks[0];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                
+                state.x = (1 - indexTip.x) * width;
+                state.y = indexTip.y * height;
+
+                const d = Math.hypot(middleTip.x - wrist.x, middleTip.y - wrist.y);
+                const isFist = d < 0.23;
+
+                if (isFist) {
+                    state.charging = true;
+                    state.level = Math.min(state.level + 2, 100);
+                } else {
+                    if (state.charging && state.level > 15) {
+                        createExplosion(state.x, state.y, state.level, 180 + state.level);
+                        playPopSound(state.level);
+                    }
+                    state.charging = false; state.level = 0;
+                }
+            });
+        }
+    }
+
+    function draw() {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalCompositeOperation = 'lighter';
+
+        handsInfo.forEach(h => {
+            if (h.charging) {
+                const r = h.level * 1.2;
+                const g = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, r);
+                g.addColorStop(0, '#fff');
+                g.addColorStop(0.5, `hsla(${180 + h.level}, 100%, 60%, 0.8)`);
+                g.addColorStop(1, 'transparent');
+                ctx.fillStyle = g;
+                ctx.beginPath(); ctx.arc(h.x, h.y, r, 0, Math.PI * 2); ctx.fill();
+            }
+        });
+
+        particles.forEach((p, i) => {
+            p.update(); p.draw();
+            if (p.alpha <= 0) particles.splice(i, 1);
+        });
+        requestAnimationFrame(draw);
+    }
+
+    const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+    hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7});
+    hands.onResults(onResults);
+
+    const camera = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 640, height: 480
+    });
+    camera.start();
+    draw();
+</script>
+</body>
+</html>
